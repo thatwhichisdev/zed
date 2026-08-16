@@ -304,6 +304,9 @@ pub trait Platform: 'static {
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
     fn write_to_primary(&self, item: ClipboardItem);
 
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    fn unlock_session(&self) -> Result<()>;
+
     #[cfg(target_os = "macos")]
     fn read_from_find_pasteboard(&self) -> Option<ClipboardItem>;
     #[cfg(target_os = "macos")]
@@ -1978,6 +1981,13 @@ pub enum WindowKind {
     /// docks, notifications or wallpapers.
     #[cfg(all(target_os = "linux", feature = "wayland"))]
     LayerShell(layer_shell::LayerShellOptions),
+
+    /// A Wayland session-lock window backed by an `ext_session_lock_surface_v1`.
+    ///
+    /// Each session-lock window targets a single output. At most one session-lock
+    /// surface may exist for a given output within an active `ext_session_lock_v1`.
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    SessionLock,
 
     /// A window that appears on top of its parent window and blocks interaction with it
     /// until the modal window is closed

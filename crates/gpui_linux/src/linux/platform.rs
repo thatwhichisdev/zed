@@ -99,6 +99,11 @@ pub(crate) trait LinuxClient {
     ) -> impl Future<Output = Option<ashpd::WindowIdentifier>> + Send + 'static {
         std::future::ready::<Option<ashpd::WindowIdentifier>>(None)
     }
+
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    fn unlock_session(&self) -> anyhow::Result<()> {
+        anyhow::bail!("Wayland session locking is not supported by this Linux client")
+    }
 }
 
 #[derive(Default)]
@@ -744,6 +749,11 @@ impl<P: LinuxClient + 'static> Platform for LinuxPlatform<P> {
     }
 
     fn add_recent_document(&self, _path: &Path) {}
+
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    fn unlock_session(&self) -> Result<()> {
+        self.inner.unlock_session()
+    }
 }
 
 #[cfg(any(feature = "wayland", feature = "x11"))]
