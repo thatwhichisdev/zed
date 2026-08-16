@@ -1306,7 +1306,7 @@ impl LinuxClient for WaylandClient {
 
     #[cfg(target_os = "linux")]
     fn unlock_session(&self) -> anyhow::Result<()> {
-        let (lock, windows) = {
+        let (lock, windows, executor) = {
             let mut state = self.0.borrow_mut();
 
             let session_lock = state
@@ -1322,7 +1322,7 @@ impl LinuxClient for WaylandClient {
             let session_lock = state
                 .session_lock
                 .take()
-                .expect("session lock was validated above");
+                .ok_or_else(|| anyhow::anyhow!("no active Wayland session lock"))?;
 
             let windows = session_lock
                 .surfaces
@@ -1330,7 +1330,7 @@ impl LinuxClient for WaylandClient {
                 .filter_map(|surface_id| state.windows.get(surface_id).cloned())
                 .collect::<Vec<_>>();
 
-            (session_lock.lock, windows)
+            (session_lock.lock, windows, state.globals.executor.clone())
         };
 
         // The compositor has confirmed the lock with the `locked` event, so
@@ -1338,12 +1338,16 @@ impl LinuxClient for WaylandClient {
         // session lock and destroys the ext_session_lock_v1 object.
         lock.unlock_and_destroy();
 
-        // Lock surfaces are no longer used after the session lock is released.
-        // Close their GPUI windows so their ext_session_lock_surface_v1 and
-        // wl_surface objects are destroyed through the normal window lifecycle.
-        for window in windows {
-            window.close();
-        }
+        // Closing a GPUI platform window invokes callbacks which re-enter the App.
+        // Schedule cleanup after the current App/input update has unwound instead
+        // of calling `window.close()` synchronously.
+        executor
+            .spawn(async move {
+                for window in windows {
+                    window.close();
+                }
+            })
+            .detach();
 
         log::info!("Wayland session unlocked");
 
