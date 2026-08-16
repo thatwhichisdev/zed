@@ -13,15 +13,20 @@ use raw_window_handle as rwh;
 use wayland_backend::client::ObjectId;
 use wayland_client::WEnum;
 use wayland_client::{
-    Proxy,
+    Proxy as _,
     protocol::{wl_output, wl_seat, wl_surface},
 };
-use wayland_protocols::wp::viewporter::client::wp_viewport;
-use wayland_protocols::xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1;
 use wayland_protocols::xdg::shell::client::xdg_popup;
 use wayland_protocols::xdg::shell::client::xdg_positioner;
 use wayland_protocols::xdg::shell::client::xdg_surface;
 use wayland_protocols::xdg::shell::client::xdg_toplevel::{self};
+use wayland_protocols::{
+    ext::session_lock::v1::client::ext_session_lock_surface_v1,
+    xdg::decoration::zv1::client::zxdg_toplevel_decoration_v1,
+};
+use wayland_protocols::{
+    ext::session_lock::v1::client::ext_session_lock_v1, wp::viewporter::client::wp_viewport,
+};
 use wayland_protocols::{
     wp::fractional_scale::v1::client::wp_fractional_scale_v1,
     xdg::dialog::v1::client::xdg_dialog_v1::XdgDialogV1,
@@ -135,6 +140,7 @@ pub struct WaylandWindowState {
 pub enum WaylandSurfaceState {
     Xdg(WaylandXdgSurfaceState),
     LayerShell(WaylandLayerSurfaceState),
+    SessionLock(WaylandSessionLockSurfaceState),
     Popup(WaylandPopupSurfaceState),
 }
 
@@ -146,7 +152,24 @@ impl WaylandSurfaceState {
         parent: Option<WaylandWindowStatePtr>,
         popup_grab: Option<(u32, wl_seat::WlSeat)>,
         target_output: Option<wl_output::WlOutput>,
+        session_lock: Option<ext_session_lock_v1::ExtSessionLockV1>,
     ) -> anyhow::Result<Self> {
+        if let WindowKind::SessionLock = &params.kind {
+            let lock = session_lock
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("session lock is not active"))?;
+
+            let output = target_output
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("session lock window requires an output"))?;
+
+            let lock_surface = lock.get_lock_surface(surface, output, &globals.qh, surface.id());
+
+            return Ok(Self::SessionLock(WaylandSessionLockSurfaceState {
+                lock_surface,
+            }));
+        }
+
         // For layer_shell windows, create a layer surface instead of an xdg surface
         if let WindowKind::LayerShell(options) = &params.kind {
             let Some(layer_shell) = globals.layer_shell.as_ref() else {
@@ -303,6 +326,10 @@ pub struct WaylandLayerSurfaceState {
     anchor: Anchor,
 }
 
+pub struct WaylandSessionLockSurfaceState {
+    lock_surface: ext_session_lock_surface_v1::ExtSessionLockSurfaceV1,
+}
+
 pub struct WaylandPopupSurfaceState {
     xdg_surface: xdg_surface::XdgSurface,
     xdg_popup: xdg_popup::XdgPopup,
@@ -371,6 +398,12 @@ impl WaylandSurfaceState {
             WaylandSurfaceState::LayerShell(WaylandLayerSurfaceState { layer_surface, .. }) => {
                 layer_surface.ack_configure(serial);
             }
+            WaylandSurfaceState::SessionLock(WaylandSessionLockSurfaceState {
+                lock_surface,
+                ..
+            }) => {
+                lock_surface.ack_configure(serial);
+            }
             WaylandSurfaceState::Popup(WaylandPopupSurfaceState { xdg_surface, .. }) => {
                 xdg_surface.ack_configure(serial);
             }
@@ -402,6 +435,7 @@ impl WaylandSurfaceState {
                 Some(xdg_surface)
             }
             WaylandSurfaceState::LayerShell(_) => None,
+            WaylandSurfaceState::SessionLock(_) => None,
         }
     }
 
@@ -423,6 +457,11 @@ impl WaylandSurfaceState {
             WaylandSurfaceState::LayerShell(WaylandLayerSurfaceState { layer_surface, .. }) => {
                 // cannot set window position of a layer surface
                 layer_surface.set_size(width as u32, height as u32);
+            }
+            WaylandSurfaceState::SessionLock(WaylandSessionLockSurfaceState {
+                lock_surface: _,
+            }) => {
+                // noop
             }
             WaylandSurfaceState::Popup(WaylandPopupSurfaceState { xdg_surface, .. }) => {
                 xdg_surface.set_window_geometry(x, y, width, height);
@@ -518,6 +557,12 @@ impl WaylandSurfaceState {
             }
             WaylandSurfaceState::LayerShell(WaylandLayerSurfaceState { layer_surface, .. }) => {
                 layer_surface.destroy();
+            }
+            WaylandSurfaceState::SessionLock(WaylandSessionLockSurfaceState {
+                lock_surface,
+                ..
+            }) => {
+                lock_surface.destroy();
             }
             WaylandSurfaceState::Popup(WaylandPopupSurfaceState {
                 xdg_surface,
@@ -746,16 +791,31 @@ impl WaylandWindow {
         parent: Option<WaylandWindowStatePtr>,
         popup_grab: Option<(u32, wl_seat::WlSeat)>,
         target_output: Option<wl_output::WlOutput>,
+        session_lock: Option<ext_session_lock_v1::ExtSessionLockV1>,
     ) -> anyhow::Result<(Self, ObjectId)> {
         let surface = globals.compositor.create_surface(&globals.qh, ());
-        let surface_state = WaylandSurfaceState::new(
+        let surface_state = match WaylandSurfaceState::new(
             &surface,
             &globals,
             &params,
             parent.clone(),
             popup_grab,
             target_output,
-        )?;
+            session_lock,
+        ) {
+            Ok(surface_state) => surface_state,
+            Err(error) => {
+                surface.destroy();
+                return Err(error);
+            }
+        };
+
+        // Session-lock surfaces must not be committed until the compositor sends the
+        // initial `ext_session_lock_surface_v1.configure` event and the client
+        // acknowledges it. The first commit must contain a non-null buffer matching
+        // the configured surface dimensions exactly.
+        let requires_initial_commit =
+            !matches!(&surface_state, WaylandSurfaceState::SessionLock(_));
 
         if let Some(fractional_scale_manager) = globals.fractional_scale_manager.as_ref() {
             fractional_scale_manager.get_fractional_scale(&surface, &globals.qh, surface.id());
@@ -783,8 +843,10 @@ impl WaylandWindow {
             callbacks: Rc::new(RefCell::new(Callbacks::default())),
         });
 
-        // Kick things off
-        surface.commit();
+        if requires_initial_commit {
+            // Kick things off
+            surface.commit();
+        }
 
         Ok((this, surface.id()))
     }
@@ -822,6 +884,17 @@ impl WaylandWindowStatePtr {
             state.inset(),
             state.tiling,
         )
+    }
+
+    pub fn acknowledge_first_configure(&self) -> bool {
+        let mut state = self.state.borrow_mut();
+
+        if state.acknowledged_first_configure {
+            false
+        } else {
+            state.acknowledged_first_configure = true;
+            true
+        }
     }
 
     pub fn ptr_eq(&self, other: &Self) -> bool {

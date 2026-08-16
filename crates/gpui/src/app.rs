@@ -1477,6 +1477,15 @@ impl App {
         self.platform.compositor_name()
     }
 
+    /// Unlocks an active Wayland session lock.
+    ///
+    /// This operation is only valid after the compositor has confirmed the
+    /// session lock with `ext_session_lock_v1.locked`.
+    #[cfg(all(target_os = "linux", feature = "wayland"))]
+    pub fn unlock_session(&self) -> Result<()> {
+        self.platform.unlock_session()
+    }
+
     /// Returns the file URL of the executable with the specified name in the application bundle
     pub fn path_for_auxiliary_executable(&self, name: &str) -> Result<PathBuf> {
         self.platform.path_for_auxiliary_executable(name)
