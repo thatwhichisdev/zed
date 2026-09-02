@@ -1279,6 +1279,16 @@ pub trait PlatformAtlas {
         key: &AtlasKey,
         build: &mut dyn FnMut() -> Result<Option<(Size<DevicePixels>, Cow<'a, [u8]>)>>,
     ) -> Result<Option<AtlasTile>>;
+
+    fn update(
+        &self,
+        _key: &AtlasKey,
+        _bounds: Bounds<DevicePixels>,
+        _bytes: &[u8],
+    ) -> Result<bool> {
+        Ok(false)
+    }
+
     fn remove(&self, key: &AtlasKey);
 }
 
