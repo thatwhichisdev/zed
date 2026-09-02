@@ -127,6 +127,34 @@ impl PlatformAtlas for WgpuAtlas {
         }
     }
 
+    fn update(&self, key: &AtlasKey, bounds: Bounds<DevicePixels>, bytes: &[u8]) -> Result<bool> {
+        let mut lock = self.0.lock();
+
+        let Some(tile) = lock.tiles_by_key.get(key).copied() else {
+            return Ok(false);
+        };
+
+        anyhow::ensure!(
+            bounds.origin.x.0 >= 0
+                && bounds.origin.y.0 >= 0
+                && bounds.origin.x.0 + bounds.size.width.0 <= tile.bounds.size.width.0
+                && bounds.origin.y.0 + bounds.size.height.0 <= tile.bounds.size.height.0,
+            "atlas update is outside tile bounds"
+        );
+
+        let upload_bounds = Bounds {
+            origin: Point {
+                x: DevicePixels(tile.bounds.origin.x.0 + bounds.origin.x.0),
+                y: DevicePixels(tile.bounds.origin.y.0 + bounds.origin.y.0),
+            },
+            size: bounds.size,
+        };
+
+        lock.upload_texture(tile.texture_id, upload_bounds, bytes);
+
+        Ok(true)
+    }
+
     fn remove(&self, key: &AtlasKey) {
         let mut lock = self.0.lock();
 

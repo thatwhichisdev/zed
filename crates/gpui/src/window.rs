@@ -4420,6 +4420,22 @@ impl Window {
         });
     }
 
+    /// Update an image region directly in the sprite atlas.
+    pub fn update_image_region(
+        &mut self,
+        data: &Arc<RenderImage>,
+        frame_index: usize,
+        bounds: Bounds<DevicePixels>,
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let params = RenderImageParams {
+            image_id: data.id,
+            frame_index,
+        };
+
+        self.sprite_atlas.update(&params.into(), bounds, bytes)
+    }
+
     /// Removes an image from the sprite atlas.
     pub fn drop_image(&mut self, data: Arc<RenderImage>) -> Result<()> {
         for frame_index in 0..data.frame_count() {
